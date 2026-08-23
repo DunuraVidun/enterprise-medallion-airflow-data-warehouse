@@ -13,9 +13,11 @@ sys.path.insert(0, str(BASE_DIR))
 from airflow.sdk import DAG
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.sdk import TriggerRule
 
 from utils.database import extract_data, truncate_table, load_data
 from utils.file import read_sql
+from utils.audit import start_audit, finish_audit
 
 # --------------------------------------------------------------------
 # Connections
@@ -108,7 +110,7 @@ def load_bronze_table(sql_file: str, target_table: str):
 
         if not rows:
             logger.warning("No data found for %s", target_table)
-            return
+            return 0
 
         truncate_table(
             conn_id=TARGET_CONN,
@@ -148,10 +150,25 @@ with DAG(
     catchup=False,
     default_args=default_args,
     max_active_runs=1,
+    max_active_tasks=4,
     tags=["bronze", "full-load", "medallion"],
 ) as dag:
 
     start = EmptyOperator(task_id="start")
+
+    audit_start = PythonOperator(
+    task_id="start_audit",
+    python_callable=start_audit,
+    )
+
+    audit_finish = PythonOperator(
+        task_id="finish_audit",
+        python_callable=finish_audit,
+        trigger_rule=TriggerRule.ALL_DONE,
+        op_kwargs={
+            "task_ids": [f"load_{t.split('.')[-1]}" for _, t in BRONZE_TABLES]
+        },
+    )
 
     end = EmptyOperator(task_id="end")
 
@@ -171,4 +188,4 @@ with DAG(
 
         tasks.append(task)
 
-    start >> tasks >> end
+    start >> audit_start >> tasks >> audit_finish >> end
