@@ -201,7 +201,7 @@ with DAG(
     audit_start = PythonOperator(
         task_id="start_audit",
         python_callable=start_audit,
-        )
+    )
 
     audit_finish = PythonOperator(
         task_id="finish_audit",
