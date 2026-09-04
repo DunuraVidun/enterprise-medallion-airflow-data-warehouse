@@ -9,6 +9,8 @@ SELECT
         NULLIF(TRIM(c.last_name), '')
     ) AS full_name,
 
+    c.email,
+
     EXTRACT(
         YEAR FROM AGE(CURRENT_DATE, c.date_of_birth)
     )::INT AS age,
