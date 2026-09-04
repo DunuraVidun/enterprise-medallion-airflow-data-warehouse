@@ -290,6 +290,26 @@ with DAG(
         load_city,
     ] >> load_customer_address
 
+    # ================================================================
+    # CUSTOMER PROFILE
+    # ================================================================
+
+    load_customer_profile = PythonOperator(
+        task_id="load_silver_customer_profile",
+        python_callable=load_silver_table,
+        op_kwargs={
+            "sql_file": "profile/customer_profile.sql",
+            "target_table": "silver.customer_profile",
+        },
+    )
+
+    [
+        load_customer,
+        load_customer_address,
+        load_city,
+        load_country,
+    ] >> load_customer_profile
+
 
     # ================================================================
     # CONTENT TYPE
@@ -380,6 +400,26 @@ with DAG(
         load_content,
         load_genre,
     ] >> load_content_genre
+
+    # ================================================================
+    # CONTENT PROFILE
+    # ================================================================
+
+    load_content_profile = PythonOperator(
+        task_id="load_silver_content_profile",
+        python_callable=load_silver_table,
+        op_kwargs={
+            "sql_file": "profile/content_profile.sql",
+            "target_table": "silver.content_profile",
+        },
+    )
+
+    [
+        load_content,
+        load_content_type,
+        load_content_genre,
+        load_genre,
+    ] >> load_content_profile
 
 
     # ================================================================
@@ -508,10 +548,30 @@ with DAG(
         load_warehouse,
     ] >> load_inventory_item
 
+    # ================================================================
+    # INVENTORY ITEM PROFILE
+    # ================================================================
+
+    load_inventory_item_profile = PythonOperator(
+        task_id="load_silver_inventory_item_profile",
+        python_callable=load_silver_table,
+        op_kwargs={
+            "sql_file": "profile/inventory_item_profile.sql",
+            "target_table": "silver.inventory_item_profile",
+        },
+    )
+
+    [
+        load_inventory_item,
+        load_content,
+        load_warehouse,
+        load_city,
+    ] >> load_inventory_item_profile
+
 
     # ================================================================
     # RENTAL
-    #
+    # ================================================================
 
     wait_for_bronze_rental = bronze_sensor(
         "wait_for_bronze_rental",
@@ -650,17 +710,25 @@ with DAG(
     load_city,
     load_customer,
     load_customer_address,
+    load_customer_profile, 
+
     load_content_type,
     load_content,
     load_genre,
     load_content_genre,
+    load_content_profile,
     load_streaming_session,
     load_review,
     load_wishlist,
+
     load_warehouse,
     load_inventory_item,
+    load_inventory_item_profile,
+
     load_rental,
     load_payment,
+
     load_support_ticket,
+    
 ] >> audit_finish >> end
 
