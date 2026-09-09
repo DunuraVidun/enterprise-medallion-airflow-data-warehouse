@@ -137,6 +137,7 @@ payment_agg AS
     FROM silver.payment
 
     WHERE payment_date IS NOT NULL
+        AND status = 'Completed'
 
     GROUP BY
         customer_id,
@@ -235,13 +236,8 @@ FROM customer_dates cd
 
 JOIN gold.dim_customer dc
     ON dc.customer_no = cd.customer_no
-
-   AND cd.full_date >= dc.effective_from
-
-   AND (
-        cd.full_date < dc.effective_to
-        OR dc.effective_to IS NULL
-       )
+   AND cd.full_date >= dc.effective_from::date
+   AND (cd.full_date < dc.effective_to::date OR dc.effective_to IS NULL)
 
 
 -- ===========================================================
