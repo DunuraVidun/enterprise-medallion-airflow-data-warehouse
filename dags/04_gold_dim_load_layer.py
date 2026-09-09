@@ -263,7 +263,7 @@ default_args = {
 
 with DAG(
 
-    dag_id="04_gold_load_layer",
+    dag_id="04_gold_dim_load_layer",
 
     description="Load Gold Dimension Tables using SCD Type 2",
 

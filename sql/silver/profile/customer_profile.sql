@@ -19,6 +19,8 @@ SELECT
 
     co.country_name,
 
+    c.status,
+
     c.created_at,
 
     c.updated_at,

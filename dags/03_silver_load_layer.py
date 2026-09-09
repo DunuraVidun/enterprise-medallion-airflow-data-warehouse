@@ -127,8 +127,6 @@ def load_silver_table(sql_file: str, target_table: str, source_table: str = None
                 0
             )
         else:
-            # Profile tables are generated from Silver data and don't
-            # directly perform Bronze cleansing.
             rejected_count = 0
 
         if not rows:

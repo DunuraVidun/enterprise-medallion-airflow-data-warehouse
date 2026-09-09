@@ -30,6 +30,7 @@ WHERE target.customer_no = source.customer_no
     OR target.age IS DISTINCT FROM source.age
     OR target.city_name IS DISTINCT FROM source.city_name
     OR target.country_name IS DISTINCT FROM source.country_name
+    OR target.status IS DISTINCT FROM source.status
     );
 
 
@@ -50,6 +51,7 @@ INSERT INTO gold.dim_customer
     age,
     city_name,
     country_name,
+    status,
 
     effective_from,
     effective_to,
@@ -67,6 +69,7 @@ SELECT
     source.age,
     source.city_name,
     source.country_name,
+    source.status,
 
     CURRENT_TIMESTAMP AS effective_from,
 
