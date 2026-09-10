@@ -145,8 +145,16 @@ def load_delta_table(
             sql=sql,
         )
 
+        extracted_count = len(rows)
+
+        logger.info(
+            "Extracted %d delta rows from %s",
+            extracted_count,
+            sql_file,
+        )
+
         if not rows:
-            logger.info("No new data for %s", target_table)
+            logger.info("No new or changed data for %s", target_table)
             return 0
 
         load_data(
@@ -158,11 +166,11 @@ def load_delta_table(
 
         logger.info(
             "Loaded %d rows into %s",
-            len(rows),
+            extracted_count,
             target_table,
         )
 
-        return len(rows)
+        return extracted_count
 
     except Exception:
         logger.exception("Delta load failed for %s", target_table)

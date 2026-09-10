@@ -58,7 +58,7 @@ def task_failure(context):
 # Generic Silver Loader Function
 # --------------------------------------------------------------------
 
-def load_silver_table(sql_file: str, target_table: str):
+def load_silver_table(sql_file: str, target_table: str, source_table: str = None,):
 
     """
     Perform a full refresh from Bronze into a Silver table.
@@ -80,6 +80,28 @@ def load_silver_table(sql_file: str, target_table: str):
             sql_file
         )
 
+        source_count = 0
+
+        if source_table:
+
+            source_count_sql = f"""
+                SELECT COUNT(*)
+                FROM {source_table}
+            """
+
+            source_rows, _ = extract_data(
+                conn_id=SOURCE_CONN,
+                sql=source_count_sql,
+            )
+
+            source_count = source_rows[0][0] if source_rows else 0
+
+            logger.info(
+                "Source record count for %s: %d",
+                source_table,
+                source_count
+            )
+
 
         sql = read_sql(
             SQL_DIR / sql_file
@@ -91,11 +113,21 @@ def load_silver_table(sql_file: str, target_table: str):
             sql=sql,
         )
 
+        processed_count = len(rows)
+
         logger.info(
             "Extracted %d rows for %s",
-            len(rows),
+            processed_count,
             target_table
         )
+
+        if source_table:
+            rejected_count = max(
+                source_count - processed_count,
+                0
+            )
+        else:
+            rejected_count = 0
 
         if not rows:
 
@@ -105,7 +137,13 @@ def load_silver_table(sql_file: str, target_table: str):
                 target_table
             )
 
-            return 0
+            return {
+                "source_record_count": source_count,
+                "processed_record_count": 0,
+                "inserted_record_count": 0,
+                "updated_record_count": 0,
+                "rejected_record_count": rejected_count,
+            }
 
 
         logger.info(
@@ -133,7 +171,13 @@ def load_silver_table(sql_file: str, target_table: str):
             target_table
         )
 
-        return len(rows)
+        return {
+            "source_record_count": source_count,
+            "processed_record_count": processed_count,
+            "inserted_record_count": processed_count,
+            "updated_record_count": 0,
+            "rejected_record_count": rejected_count,
+        }
 
     except Exception:
 
@@ -215,6 +259,7 @@ with DAG(
         op_kwargs={
             "sql_file": "country.sql",
             "target_table": "silver.country",
+            "source_table": "bronze.country",
         },
     )
 
@@ -236,6 +281,7 @@ with DAG(
         op_kwargs={
             "sql_file": "city.sql",
             "target_table": "silver.city",
+            "source_table": "bronze.city",
         },
     )
 
@@ -259,6 +305,7 @@ with DAG(
         op_kwargs={
             "sql_file": "customer.sql",
             "target_table": "silver.customer",
+            "source_table": "bronze.customer",
         },
     )
 
@@ -280,6 +327,7 @@ with DAG(
         op_kwargs={
             "sql_file": "customer_address.sql",
             "target_table": "silver.customer_address",
+            "source_table": "bronze.customer_address",
         },
     )
 
@@ -289,6 +337,26 @@ with DAG(
         load_customer,
         load_city,
     ] >> load_customer_address
+
+    # ================================================================
+    # CUSTOMER PROFILE
+    # ================================================================
+
+    load_customer_profile = PythonOperator(
+        task_id="load_silver_customer_profile",
+        python_callable=load_silver_table,
+        op_kwargs={
+            "sql_file": "profile/customer_profile.sql",
+            "target_table": "silver.customer_profile",
+        },
+    )
+
+    [
+        load_customer,
+        load_customer_address,
+        load_city,
+        load_country,
+    ] >> load_customer_profile
 
 
     # ================================================================
@@ -306,6 +374,7 @@ with DAG(
         op_kwargs={
             "sql_file": "content_type.sql",
             "target_table": "silver.content_type",
+            "source_table": "bronze.content_type",
         },
     )
 
@@ -327,6 +396,7 @@ with DAG(
         op_kwargs={
             "sql_file": "content.sql",
             "target_table": "silver.content",
+            "source_table": "bronze.content",
         },
     )
 
@@ -350,6 +420,7 @@ with DAG(
         op_kwargs={
             "sql_file": "genre.sql",
             "target_table": "silver.genre",
+            "source_table": "bronze.genre",
         },
     )
 
@@ -371,6 +442,7 @@ with DAG(
         op_kwargs={
             "sql_file": "content_genre.sql",
             "target_table": "silver.content_genre",
+            "source_table": "bronze.content_genre",
         },
     )
 
@@ -380,6 +452,26 @@ with DAG(
         load_content,
         load_genre,
     ] >> load_content_genre
+
+    # ================================================================
+    # CONTENT PROFILE
+    # ================================================================
+
+    load_content_profile = PythonOperator(
+        task_id="load_silver_content_profile",
+        python_callable=load_silver_table,
+        op_kwargs={
+            "sql_file": "profile/content_profile.sql",
+            "target_table": "silver.content_profile",
+        },
+    )
+
+    [
+        load_content,
+        load_content_type,
+        load_content_genre,
+        load_genre,
+    ] >> load_content_profile
 
 
     # ================================================================
@@ -397,6 +489,7 @@ with DAG(
         op_kwargs={
             "sql_file": "streaming_session.sql",
             "target_table": "silver.streaming_session",
+            "source_table": "bronze.streaming_session",
         },
     )
 
@@ -423,6 +516,7 @@ with DAG(
         op_kwargs={
             "sql_file": "review.sql",
             "target_table": "silver.review",
+            "source_table": "bronze.review",
         },
     )
 
@@ -449,6 +543,7 @@ with DAG(
         op_kwargs={
             "sql_file": "wishlist.sql",
             "target_table": "silver.wishlist",
+            "source_table": "bronze.wishlist",
         },
     )
 
@@ -475,6 +570,7 @@ with DAG(
         op_kwargs={
             "sql_file": "warehouse.sql",
             "target_table": "silver.warehouse",
+            "source_table": "bronze.warehouse",
         },
     )
 
@@ -498,6 +594,7 @@ with DAG(
         op_kwargs={
             "sql_file": "inventory_item.sql",
             "target_table": "silver.inventory_item",
+            "source_table": "bronze.inventory_item",
         },
     )
 
@@ -508,10 +605,30 @@ with DAG(
         load_warehouse,
     ] >> load_inventory_item
 
+    # ================================================================
+    # INVENTORY ITEM PROFILE
+    # ================================================================
+
+    load_inventory_item_profile = PythonOperator(
+        task_id="load_silver_inventory_item_profile",
+        python_callable=load_silver_table,
+        op_kwargs={
+            "sql_file": "profile/inventory_item_profile.sql",
+            "target_table": "silver.inventory_item_profile",
+        },
+    )
+
+    [
+        load_inventory_item,
+        load_content,
+        load_warehouse,
+        load_city,
+    ] >> load_inventory_item_profile
+
 
     # ================================================================
     # RENTAL
-    #
+    # ================================================================
 
     wait_for_bronze_rental = bronze_sensor(
         "wait_for_bronze_rental",
@@ -524,6 +641,7 @@ with DAG(
         op_kwargs={
             "sql_file": "rental.sql",
             "target_table": "silver.rental",
+            "source_table": "bronze.rental",
         },
     )
 
@@ -550,6 +668,7 @@ with DAG(
         op_kwargs={
             "sql_file": "payment.sql",
             "target_table": "silver.payment",
+            "source_table": "bronze.payment",
         },
     )
 
@@ -576,6 +695,7 @@ with DAG(
         op_kwargs={
             "sql_file": "support_ticket.sql",
             "target_table": "silver.support_ticket",
+            "source_table": "bronze.support_ticket",
         },
     )
 
@@ -597,15 +717,21 @@ with DAG(
                 "load_silver_city",
                 "load_silver_customer",
                 "load_silver_customer_address",
+                "load_silver_customer_profile",
+
                 "load_silver_content_type",
                 "load_silver_content",
                 "load_silver_genre",
                 "load_silver_content_genre",
+                "load_silver_content_profile",
+
                 "load_silver_streaming_session",
                 "load_silver_review",
                 "load_silver_wishlist",
                 "load_silver_warehouse",
                 "load_silver_inventory_item",
+                "load_silver_inventory_item_profile",
+
                 "load_silver_rental",
                 "load_silver_payment",
                 "load_silver_support_ticket",
@@ -650,17 +776,25 @@ with DAG(
     load_city,
     load_customer,
     load_customer_address,
+    load_customer_profile, 
+
     load_content_type,
     load_content,
     load_genre,
     load_content_genre,
+    load_content_profile,
     load_streaming_session,
     load_review,
     load_wishlist,
+
     load_warehouse,
     load_inventory_item,
+    load_inventory_item_profile,
+
     load_rental,
     load_payment,
+
     load_support_ticket,
+
 ] >> audit_finish >> end
 

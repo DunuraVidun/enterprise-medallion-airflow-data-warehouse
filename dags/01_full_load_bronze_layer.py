@@ -106,7 +106,11 @@ def load_bronze_table(sql_file: str, target_table: str):
             sql=sql,
         )
 
-        logger.info("Extracted %d rows from %s", len(rows), sql_file)
+        extracted_count = len(rows)
+
+        logger.info("Extracted %d rows from %s",
+                    extracted_count,
+                    sql_file)
 
         if not rows:
             logger.warning("No data found for %s", target_table)
@@ -124,8 +128,11 @@ def load_bronze_table(sql_file: str, target_table: str):
             rows=rows,
         )
 
-        logger.info("Loaded %d rows into %s", len(rows), target_table)
-        return len(rows)
+        logger.info("Loaded %d rows into %s",
+                    extracted_count,
+                    target_table)
+        
+        return extracted_count
 
     except Exception:
         logger.exception("Failed loading %s", target_table)

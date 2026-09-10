@@ -67,8 +67,6 @@ WHERE rn = 1
         WHERE c.customer_id = cleaned.customer_id
     )
 
-    -- Referential integrity: rental is optional,
-    -- but when provided it must exist
     AND
     (
         rental_id IS NULL
