@@ -158,13 +158,14 @@ def load_gold_fact(
     sql_file: str,
 ):
     """
-    Load a Gold fact table.
+    Load a Gold fact table using a FULL REFRESH pattern.
 
-    Steps:
-    1. Read the Gold fact SQL.
-    2. Execute the upsert and capture insert/update outcome per row.
-    3. Commit the transaction.
-    4. Return statistics for the audit process.
+    Audit logic:
+    - source_record_count    = expected fact-grain rows
+    - processed_record_count = rows actually present after load
+    - inserted_record_count  = rows loaded during rebuild
+    - updated_record_count   = 0
+    - rejected_record_count  = expected rows not loaded
     """
 
     logger.info(
@@ -178,63 +179,216 @@ def load_gold_fact(
 
     conn = hook.get_conn()
 
+    # ------------------------------------------------------------
+    # Target fact table mapping
+    # ------------------------------------------------------------
+
+    fact_table_map = {
+
+        "fact_customer_daily_activity.sql":
+            "gold.fact_customer_daily_activity",
+
+        "fact_content_monthly_performance.sql":
+            "gold.fact_content_monthly_performance",
+
+        "fact_inventory_daily_utilization.sql":
+            "gold.fact_inventory_daily_utilization",
+
+    }
+
+    # ------------------------------------------------------------
+    # Expected fact-grain row count queries
+    # ------------------------------------------------------------
+
+    source_count_sql_map = {
+
+        "fact_customer_daily_activity.sql":
+        """
+        SELECT COUNT(*)
+        FROM silver.customer AS c
+        JOIN gold.dim_date AS d
+            ON d.full_date >= COALESCE(
+                c.registration_date,
+                DATE '2023-01-01'
+            )
+           AND d.full_date <= CURRENT_DATE
+        """,
+
+        "fact_content_monthly_performance.sql":
+        """
+        SELECT COUNT(*)
+        FROM silver.content AS c
+        JOIN gold.dim_date AS d
+            ON d.day = 1
+           AND d.full_date <= DATE_TRUNC(
+               'month',
+               CURRENT_DATE
+           )::DATE
+           AND d.full_date >= GREATEST(
+               COALESCE(
+                   DATE_TRUNC(
+                       'month',
+                       c.release_date
+                   )::DATE,
+                   DATE '2023-01-01'
+               ),
+               DATE '2023-01-01'
+           )
+        """,
+
+        "fact_inventory_daily_utilization.sql":
+        """
+        SELECT COUNT(*)
+        FROM silver.inventory_item AS ii
+        JOIN gold.dim_date AS d
+            ON d.full_date >= COALESCE(
+                ii.purchase_date,
+                DATE '2023-01-01'
+            )
+           AND d.full_date <= CURRENT_DATE
+        WHERE ii.barcode IS NOT NULL
+        """,
+
+    }
+
+    target_table = fact_table_map.get(sql_file)
+
+    source_count_sql = source_count_sql_map.get(sql_file)
+
+    if target_table is None:
+
+        raise ValueError(
+            f"Unknown Gold fact SQL file: {sql_file}"
+        )
+
+    if source_count_sql is None:
+
+        raise ValueError(
+            f"No source count query configured for: {sql_file}"
+        )
+
     try:
+
+        # --------------------------------------------------------
+        # STEP 1
+        # Determine expected fact rows BEFORE loading.
+        # --------------------------------------------------------
+
+        with conn.cursor() as cursor:
+
+            cursor.execute(source_count_sql)
+
+            source_record_count = cursor.fetchone()[0]
+
+        logger.info(
+            "Expected fact rows for %s = %d",
+            sql_file,
+            source_record_count,
+        )
+
+        # --------------------------------------------------------
+        # STEP 2
+        # Read full-refresh SQL.
+        # --------------------------------------------------------
 
         sql = read_sql(
             SQL_DIR / sql_file
         )
 
-        # ------------------------------------------------------------
-        # Execute fact load
+        # --------------------------------------------------------
+        # STEP 3
+        # Execute:
         #
-        # Each fact SQL ends with:
-        #   RETURNING (xmax = 0) AS is_insert
+        # TRUNCATE
+        # +
+        # INSERT
         #
-        # xmax = 0 means the row was freshly inserted;
-        # otherwise it went through ON CONFLICT DO UPDATE.
-        # ------------------------------------------------------------
+        # No fetchall() because this is not a RETURNING query.
+        # --------------------------------------------------------
 
         with conn.cursor() as cursor:
 
             cursor.execute(sql)
 
-            rows = cursor.fetchall()
+        # --------------------------------------------------------
+        # STEP 4
+        # Commit full refresh.
+        # --------------------------------------------------------
 
         conn.commit()
 
-        processed_count = len(rows)
+        # --------------------------------------------------------
+        # STEP 5
+        # Count rows actually loaded.
+        # --------------------------------------------------------
 
-        inserted_count = sum(
-            1
-            for row in rows
-            if row[0]
+        with conn.cursor() as cursor:
+
+            cursor.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {target_table}
+                """
+            )
+
+            processed_record_count = cursor.fetchone()[0]
+
+        # --------------------------------------------------------
+        # STEP 6
+        # Full refresh = every processed row was inserted.
+        # There is no UPDATE operation.
+        # --------------------------------------------------------
+
+        inserted_record_count = processed_record_count
+
+        updated_record_count = 0
+
+        # --------------------------------------------------------
+        # STEP 7
+        # Determine rows that were expected but not loaded.
+        # --------------------------------------------------------
+
+        rejected_record_count = max(
+            source_record_count -
+            processed_record_count,
+            0
         )
-
-        updated_count = processed_count - inserted_count
 
         logger.info(
             "Gold fact load complete for %s | "
-            "processed=%d inserted=%d updated=%d",
+            "expected=%d processed=%d inserted=%d "
+            "updated=%d rejected=%d",
             sql_file,
-            processed_count,
-            inserted_count,
-            updated_count,
+            source_record_count,
+            processed_record_count,
+            inserted_record_count,
+            updated_record_count,
+            rejected_record_count,
         )
+
+        # --------------------------------------------------------
+        # STEP 8
+        # Return audit statistics.
+        # --------------------------------------------------------
 
         return {
 
-            "source_record_count": processed_count,
+            "source_record_count":
+                source_record_count,
 
-            "processed_record_count": processed_count,
+            "processed_record_count":
+                processed_record_count,
 
-            "inserted_record_count": inserted_count,
+            "inserted_record_count":
+                inserted_record_count,
 
-            "updated_record_count": updated_count,
+            "updated_record_count":
+                updated_record_count,
 
-            "rejected_record_count": 0,
+            "rejected_record_count":
+                rejected_record_count,
 
         }
-
 
     except Exception:
 
@@ -246,7 +400,6 @@ def load_gold_fact(
         )
 
         raise
-
 
     finally:
 

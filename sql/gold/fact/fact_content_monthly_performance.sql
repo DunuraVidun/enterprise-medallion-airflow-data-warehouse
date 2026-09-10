@@ -4,13 +4,20 @@
 -- Grain:
 -- One row per content item per month
 --
--- Measures:
--- 1. Total streams
--- 2. Total rental count
--- 3. Revenue generated
--- 4. Average customer rating
--- 5. Number of wishlist additions
+-- SCD2 RULE:
+-- The content dimension version valid at the END of the
+-- month is used for the monthly fact row.
+--
+-- FACT TABLE IS FULLY REBUILT ON EACH RUN.
 -- ===========================================================
+
+
+-- ===========================================================
+-- STEP 0
+-- FULL REFRESH
+-- ===========================================================
+
+TRUNCATE TABLE gold.fact_content_monthly_performance;
 
 
 WITH
@@ -20,9 +27,9 @@ WITH
 -- CONTENT MONTH SPINE
 --
 -- One row for every content item for every month from
--- release month up to current month.
+-- release month through the current month.
 --
--- The date_key represents the first day of the month.
+-- date_key = first day of month.
 -- ===========================================================
 
 content_months AS
@@ -34,9 +41,9 @@ content_months AS
 
         d.full_date AS month_start
 
-    FROM silver.content c
+    FROM silver.content AS c
 
-    JOIN gold.dim_date d
+    JOIN gold.dim_date AS d
 
         ON d.day = 1
 
@@ -46,19 +53,21 @@ content_months AS
                CURRENT_DATE
            )::DATE
 
-       AND d.full_date >= GREATEST
-       (
-           COALESCE(
-               DATE_TRUNC(
-                   'month',
-                   c.release_date
-               )::DATE,
+       AND d.full_date >=
+           GREATEST
+           (
+               COALESCE
+               (
+                   DATE_TRUNC(
+                       'month',
+                       c.release_date
+                   )::DATE,
+
+                   DATE '2023-01-01'
+               ),
 
                DATE '2023-01-01'
-           ),
-
-           DATE '2023-01-01'
-       )
+           )
 ),
 
 
@@ -84,6 +93,7 @@ stream_agg AS
 
     GROUP BY
         content_id,
+
         DATE_TRUNC(
             'month',
             start_time
@@ -109,9 +119,9 @@ rental_agg AS
 
         COUNT(r.rental_id) AS total_rental_count
 
-    FROM silver.rental r
+    FROM silver.rental AS r
 
-    JOIN silver.inventory_item ii
+    JOIN silver.inventory_item AS ii
 
         ON ii.inventory_id = r.inventory_id
 
@@ -130,9 +140,9 @@ rental_agg AS
 -- ===========================================================
 -- REVENUE BY CONTENT
 --
--- Payment is linked to rental.
+-- payment -> rental -> inventory_item -> content
 --
--- payment -> rental -> inventory item -> content
+-- Only completed payments are included.
 -- ===========================================================
 
 revenue_agg AS
@@ -150,19 +160,21 @@ revenue_agg AS
             0
         ) AS revenue_generated
 
-    FROM silver.payment p
+    FROM silver.payment AS p
 
-    JOIN silver.rental r
+    JOIN silver.rental AS r
 
         ON r.rental_id = p.rental_id
 
-    JOIN silver.inventory_item ii
+    JOIN silver.inventory_item AS ii
 
         ON ii.inventory_id = r.inventory_id
 
     WHERE p.payment_date IS NOT NULL
 
       AND p.rental_id IS NOT NULL
+
+      AND p.status = 'COMPLETED'
 
     GROUP BY
         ii.content_id,
@@ -222,8 +234,7 @@ wishlist_agg AS
             added_date
         )::DATE AS month_start,
 
-        COUNT(wishlist_id)
-            AS wishlist_addition_count
+        COUNT(wishlist_id) AS wishlist_addition_count
 
     FROM silver.wishlist
 
@@ -266,44 +277,68 @@ SELECT
     COALESCE(
         sa.total_streams,
         0
-    ),
+    ) AS total_streams,
 
     COALESCE(
         ra.total_rental_count,
         0
-    ),
+    ) AS total_rental_count,
 
     COALESCE(
         rva.revenue_generated,
         0
-    ),
+    ) AS revenue_generated,
 
     COALESCE(
         rta.average_customer_rating,
         0
-    ),
+    ) AS average_customer_rating,
 
     COALESCE(
         wa.wishlist_addition_count,
         0
-    )
+    ) AS wishlist_addition_count
 
-FROM content_months cm
+FROM content_months AS cm
 
 
 -- ===========================================================
--- CONTENT DIMENSION LOOKUP
+-- CONTENT DIMENSION SCD2 LOOKUP
+--
+-- BUSINESS RULE:
+-- Use the content dimension version that was valid at the
+-- END of the month.
+--
+-- END OF MONTH =
+-- month_start + 1 month - 1 microsecond
+--
+-- Handles both:
+--   1. Closed SCD2 records
+--   2. Current/open-ended SCD2 record (effective_to IS NULL)
 -- ===========================================================
 
-JOIN gold.dim_content dc
+JOIN gold.dim_content AS dc
 
     ON dc.content_id = cm.content_id
 
-   AND cm.month_start >= dc.effective_from
+   AND
+       (
+           cm.month_start
+           + INTERVAL '1 month'
+           - INTERVAL '1 microsecond'
+       ) >= dc.effective_from
 
-   AND (
-        cm.month_start < dc.effective_to
-        OR dc.effective_to IS NULL
+   AND
+       (
+           dc.effective_to IS NULL
+
+           OR
+
+           (
+               cm.month_start
+               + INTERVAL '1 month'
+               - INTERVAL '1 microsecond'
+           ) < dc.effective_to
        )
 
 
@@ -311,7 +346,7 @@ JOIN gold.dim_content dc
 -- STREAMING
 -- ===========================================================
 
-LEFT JOIN stream_agg sa
+LEFT JOIN stream_agg AS sa
 
     ON sa.content_id = cm.content_id
 
@@ -322,7 +357,7 @@ LEFT JOIN stream_agg sa
 -- RENTALS
 -- ===========================================================
 
-LEFT JOIN rental_agg ra
+LEFT JOIN rental_agg AS ra
 
     ON ra.content_id = cm.content_id
 
@@ -333,7 +368,7 @@ LEFT JOIN rental_agg ra
 -- REVENUE
 -- ===========================================================
 
-LEFT JOIN revenue_agg rva
+LEFT JOIN revenue_agg AS rva
 
     ON rva.content_id = cm.content_id
 
@@ -344,7 +379,7 @@ LEFT JOIN revenue_agg rva
 -- RATINGS
 -- ===========================================================
 
-LEFT JOIN rating_agg rta
+LEFT JOIN rating_agg AS rta
 
     ON rta.content_id = cm.content_id
 
@@ -355,39 +390,13 @@ LEFT JOIN rating_agg rta
 -- WISHLIST
 -- ===========================================================
 
-LEFT JOIN wishlist_agg wa
+LEFT JOIN wishlist_agg AS wa
 
     ON wa.content_id = cm.content_id
 
-   AND wa.month_start = cm.month_start
+   AND wa.month_start = cm.month_start;
 
 
 -- ===========================================================
--- IDEMPOTENCY
+-- END
 -- ===========================================================
-
-ON CONFLICT
-(
-    content_sk,
-    date_key
-)
-
-DO UPDATE
-
-SET
-    total_streams =
-        EXCLUDED.total_streams,
-
-    total_rental_count =
-        EXCLUDED.total_rental_count,
-
-    revenue_generated =
-        EXCLUDED.revenue_generated,
-
-    average_customer_rating =
-        EXCLUDED.average_customer_rating,
-
-    wishlist_addition_count =
-        EXCLUDED.wishlist_addition_count
-        
-RETURNING (xmax = 0) AS is_insert;

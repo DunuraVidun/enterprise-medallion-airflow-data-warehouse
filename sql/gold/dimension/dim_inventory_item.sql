@@ -80,10 +80,7 @@ SELECT
     source.warehouse_city,
     source.item_condition,
 
-    COALESCE(
-        source.created_at,
-        source.updated_at
-    ) AS effective_from,
+    DATE '2018-01-01' AS effective_from,
 
     TIMESTAMP '9999-12-31 23:59:59'
         AS effective_to,
@@ -103,12 +100,7 @@ WHERE NOT EXISTS
     FROM gold.dim_inventory_item AS existing
 
     WHERE existing.barcode = source.barcode
-)
-
-AND COALESCE(
-        source.created_at,
-        source.updated_at
-    ) IS NOT NULL;
+);
 
 
 -- ===========================================================

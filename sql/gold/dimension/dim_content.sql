@@ -79,10 +79,7 @@ SELECT
     source.primary_genre,
     source.release_year,
 
-    COALESCE(
-        source.created_at,
-        source.updated_at
-    ) AS effective_from,
+    DATE '2023-01-01' AS effective_from,
 
     TIMESTAMP '9999-12-31 23:59:59'
         AS effective_to,
@@ -102,12 +99,7 @@ WHERE NOT EXISTS
     FROM gold.dim_content AS existing
 
     WHERE existing.content_id = source.content_id
-)
-
-AND COALESCE(
-        source.created_at,
-        source.updated_at
-    ) IS NOT NULL;
+);
 
 
 -- ===========================================================

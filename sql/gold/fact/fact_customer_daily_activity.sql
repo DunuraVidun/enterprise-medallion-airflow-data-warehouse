@@ -10,8 +10,22 @@
 -- 3. Number of physical rentals
 -- 4. Number of returned items
 -- 5. Total amount spent
--- 6. Number of support tickets raised
+-- 6. Number of support tickets
+--
+-- SCD2 RULE:
+-- The customer dimension version valid at the END of the
+-- activity day is used for the fact row.
+--
+-- FACT TABLE IS FULLY REBUILT ON EACH RUN.
 -- ===========================================================
+
+
+-- ===========================================================
+-- STEP 0
+-- FULL REFRESH
+-- ===========================================================
+
+TRUNCATE TABLE gold.fact_customer_daily_activity;
 
 
 WITH
@@ -20,8 +34,11 @@ WITH
 -- ===========================================================
 -- CUSTOMER DATE SPINE
 --
--- Creates one row for every customer for every date from
--- registration date up to the current date.
+-- One row per customer per date from registration date
+-- through the current date.
+--
+-- If registration_date is unavailable, 2023-01-01 is used
+-- as the analytical fallback date.
 -- ===========================================================
 
 customer_dates AS
@@ -29,16 +46,19 @@ customer_dates AS
     SELECT
         c.customer_id,
         c.customer_no,
+
         d.date_key,
         d.full_date
 
-    FROM silver.customer c
+    FROM silver.customer AS c
 
-    JOIN gold.dim_date d
-        ON d.full_date >= COALESCE(
-            c.registration_date,
-            DATE '2023-01-01'
-        )
+    JOIN gold.dim_date AS d
+
+        ON d.full_date >=
+           COALESCE(
+               c.registration_date,
+               DATE '2023-01-01'
+           )
 
        AND d.full_date <= CURRENT_DATE
 ),
@@ -46,12 +66,15 @@ customer_dates AS
 
 -- ===========================================================
 -- STREAMING ACTIVITY
+--
+-- Streaming sessions are counted on the date they started.
 -- ===========================================================
 
 streaming_agg AS
 (
     SELECT
         customer_id,
+
         start_time::DATE AS activity_date,
 
         COUNT(stream_id) AS stream_session_count,
@@ -81,6 +104,7 @@ rental_agg AS
 (
     SELECT
         customer_id,
+
         rental_date AS activity_date,
 
         COUNT(rental_id) AS physical_rental_count
@@ -105,6 +129,7 @@ return_agg AS
 (
     SELECT
         customer_id,
+
         return_date AS activity_date,
 
         COUNT(rental_id) AS returned_item_count
@@ -121,12 +146,15 @@ return_agg AS
 
 -- ===========================================================
 -- CUSTOMER PAYMENTS
+--
+-- Only completed payments are included.
 -- ===========================================================
 
 payment_agg AS
 (
     SELECT
         customer_id,
+
         payment_date::DATE AS activity_date,
 
         COALESCE(
@@ -137,7 +165,8 @@ payment_agg AS
     FROM silver.payment
 
     WHERE payment_date IS NOT NULL
-        AND status = 'Completed'
+
+      AND UPPER(status) = 'COMPLETED'
 
     GROUP BY
         customer_id,
@@ -155,6 +184,7 @@ support_agg AS
 (
     SELECT
         customer_id,
+
         opened_date::DATE AS activity_date,
 
         COUNT(ticket_id) AS support_ticket_count
@@ -194,57 +224,117 @@ SELECT
 
     cd.date_key,
 
+
+    -- =======================================================
+    -- STREAMING
+    -- =======================================================
+
     COALESCE(
         sa.stream_session_count,
         0
-    ),
+    ) AS stream_session_count,
 
     COALESCE(
         sa.total_stream_duration_mins,
         0
-    ),
+    ) AS total_stream_duration_mins,
+
+
+    -- =======================================================
+    -- RENTALS
+    -- =======================================================
 
     COALESCE(
         ra.physical_rental_count,
         0
-    ),
+    ) AS physical_rental_count,
+
+
+    -- =======================================================
+    -- RETURNS
+    -- =======================================================
 
     COALESCE(
         rta.returned_item_count,
         0
-    ),
+    ) AS returned_item_count,
+
+
+    -- =======================================================
+    -- PAYMENTS
+    -- =======================================================
 
     COALESCE(
         pa.total_amount_spent,
         0
-    ),
+    ) AS total_amount_spent,
+
+
+    -- =======================================================
+    -- SUPPORT
+    -- =======================================================
 
     COALESCE(
         sta.support_ticket_count,
         0
-    )
+    ) AS support_ticket_count
 
-FROM customer_dates cd
+
+FROM customer_dates AS cd
 
 
 -- ===========================================================
--- CUSTOMER DIMENSION LOOKUP
+-- CUSTOMER DIMENSION SCD2 LOOKUP
 --
--- Retrieves the customer surrogate key that was valid
--- on the activity date using SCD Type 2 effective dates.
+-- BUSINESS RULE:
+-- Use the customer dimension version that was valid at the
+-- END of the activity day.
+--
+-- END OF DAY =
+--
+-- full_date + 1 day - 1 microsecond
+--
+-- SCD2 interval:
+--
+-- effective_from <= end_of_day
+-- AND
+-- end_of_day < effective_to
+--
+-- Supports:
+-- 1. Closed SCD2 records
+-- 2. Current/open-ended records where effective_to IS NULL
 -- ===========================================================
 
-JOIN gold.dim_customer dc
+JOIN gold.dim_customer AS dc
+
     ON dc.customer_no = cd.customer_no
-   AND cd.full_date >= dc.effective_from::date
-   AND (cd.full_date < dc.effective_to::date OR dc.effective_to IS NULL)
+
+   AND
+       (
+           cd.full_date
+           + INTERVAL '1 day'
+           - INTERVAL '1 microsecond'
+       ) >= dc.effective_from
+
+   AND
+       (
+           dc.effective_to IS NULL
+
+           OR
+
+           (
+               cd.full_date
+               + INTERVAL '1 day'
+               - INTERVAL '1 microsecond'
+           ) < dc.effective_to
+       )
 
 
 -- ===========================================================
 -- STREAMING
 -- ===========================================================
 
-LEFT JOIN streaming_agg sa
+LEFT JOIN streaming_agg AS sa
 
     ON sa.customer_id = cd.customer_id
 
@@ -255,7 +345,7 @@ LEFT JOIN streaming_agg sa
 -- RENTALS
 -- ===========================================================
 
-LEFT JOIN rental_agg ra
+LEFT JOIN rental_agg AS ra
 
     ON ra.customer_id = cd.customer_id
 
@@ -266,7 +356,7 @@ LEFT JOIN rental_agg ra
 -- RETURNS
 -- ===========================================================
 
-LEFT JOIN return_agg rta
+LEFT JOIN return_agg AS rta
 
     ON rta.customer_id = cd.customer_id
 
@@ -277,7 +367,7 @@ LEFT JOIN return_agg rta
 -- PAYMENTS
 -- ===========================================================
 
-LEFT JOIN payment_agg pa
+LEFT JOIN payment_agg AS pa
 
     ON pa.customer_id = cd.customer_id
 
@@ -288,42 +378,13 @@ LEFT JOIN payment_agg pa
 -- SUPPORT
 -- ===========================================================
 
-LEFT JOIN support_agg sta
+LEFT JOIN support_agg AS sta
 
     ON sta.customer_id = cd.customer_id
 
-   AND sta.activity_date = cd.full_date
+   AND sta.activity_date = cd.full_date;
 
 
 -- ===========================================================
--- IDEMPOTENCY
+-- END
 -- ===========================================================
-
-ON CONFLICT
-(
-    customer_sk,
-    date_key
-)
-
-DO UPDATE
-
-SET
-    stream_session_count =
-        EXCLUDED.stream_session_count,
-
-    total_stream_duration_mins =
-        EXCLUDED.total_stream_duration_mins,
-
-    physical_rental_count =
-        EXCLUDED.physical_rental_count,
-
-    returned_item_count =
-        EXCLUDED.returned_item_count,
-
-    total_amount_spent =
-        EXCLUDED.total_amount_spent,
-
-    support_ticket_count =
-        EXCLUDED.support_ticket_count
-
-RETURNING (xmax = 0) AS is_insert;
